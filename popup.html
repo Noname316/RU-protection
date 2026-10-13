@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>RU-защита</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="24" height="24">
+    <h1>RU-защита</h1>
+  </header>
+
+  <section class="toggles">
+    <label class="toggle">
+      <span class="grow">
+        <span class="label">Показывать уведомление</span>
+        <span class="hint">Окно в правом нижнем углу страницы</span>
+      </span>
+      <input type="checkbox" id="notify">
+      <span class="switch" aria-hidden="true"></span>
+    </label>
+    <label class="toggle">
+      <span class="grow">
+        <span class="label">Блокировать автоматически</span>
+        <span class="hint">Без вопросов, кроме разрешённых доменов</span>
+      </span>
+      <input type="checkbox" id="autoBlock">
+      <span class="switch" aria-hidden="true"></span>
+    </label>
+    <p id="mode" class="mode"></p>
+  </section>
+
+  <section>
+    <h2 id="pageTitle">Эта страница</h2>
+    <ul id="pageList" class="list"></ul>
+  </section>
+
+  <section>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-list="allowed" class="active">Разрешённые <span id="allowedCount"></span></button>
+      <button role="tab" data-list="blocked">Заблокированные <span id="blockedCount"></span></button>
+    </div>
+    <ul id="lists" class="list"></ul>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>
