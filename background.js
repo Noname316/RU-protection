@@ -11,6 +11,9 @@
 //                               пользователя, справа внизу появляется запрос.
 //   autoBlock = off, notify = off — блокируется только чёрный список.
 
+// Firefox даёт API как `browser`, Chromium — как `chrome`; оба возвращают промисы.
+const ext = globalThis.browser ?? globalThis.chrome;
+
 const ZONES = ['ru', 'xn--p1ai']; // .ru и .рф (punycode)
 const DEFAULTS = { notify: true, autoBlock: false, allowed: [], blocked: [] };
 const BASE_CONDITION = { initiatorDomains: ZONES, excludedResourceTypes: ['main_frame'] };
@@ -22,9 +25,9 @@ let tabs = {};
 const ready = init();
 
 async function init() {
-  settings = { ...DEFAULTS, ...(await chrome.storage.local.get(DEFAULTS)) };
+  settings = { ...DEFAULTS, ...(await ext.storage.local.get(DEFAULTS)) };
   try {
-    tabs = (await chrome.storage.session.get({ tabs: {} })).tabs || {};
+    tabs = (await ext.storage.session.get({ tabs: {} })).tabs || {};
   } catch {
     tabs = {};
   }
@@ -91,8 +94,8 @@ async function applyRules() {
       condition: { ...BASE_CONDITION, requestDomains: settings.allowed },
     });
   }
-  const old = await chrome.declarativeNetRequest.getDynamicRules();
-  await chrome.declarativeNetRequest.updateDynamicRules({
+  const old = await ext.declarativeNetRequest.getDynamicRules();
+  await ext.declarativeNetRequest.updateDynamicRules({
     removeRuleIds: old.map((r) => r.id),
     addRules: rules,
   });
@@ -103,7 +106,7 @@ async function applyRules() {
 let saveTimer = null;
 function saveSoon() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => chrome.storage.session.set({ tabs }).catch(() => {}), 300);
+  saveTimer = setTimeout(() => ext.storage.session.set({ tabs }).catch(() => {}), 300);
 }
 
 function view(tabId) {
@@ -120,8 +123,8 @@ function updateBadge(tabId) {
   const blocked = items.filter((i) => isBlocking(i.status));
   const hasPending = blocked.some((i) => i.status === 'pending');
   const id = Number(tabId);
-  chrome.action.setBadgeText({ tabId: id, text: blocked.length ? String(blocked.length) : '' }).catch(() => {});
-  chrome.action
+  ext.action.setBadgeText({ tabId: id, text: blocked.length ? String(blocked.length) : '' }).catch(() => {});
+  ext.action
     .setBadgeBackgroundColor({ tabId: id, color: hasPending ? '#d97706' : '#dc2626' })
     .catch(() => {});
 }
@@ -132,7 +135,7 @@ function pushTab(tabId) {
   pushTimers[tabId] = setTimeout(() => {
     delete pushTimers[tabId];
     updateBadge(tabId);
-    chrome.tabs.sendMessage(Number(tabId), { type: 'state', ...view(tabId) }).catch(() => {});
+    ext.tabs.sendMessage(Number(tabId), { type: 'state', ...view(tabId) }).catch(() => {});
   }, 120);
   saveSoon();
 }
@@ -192,7 +195,7 @@ async function onRequest(details) {
   pushTab(tabId);
 }
 
-chrome.webRequest.onBeforeRequest.addListener(
+ext.webRequest.onBeforeRequest.addListener(
   (d) => {
     if (d.type === 'main_frame') {
       if (d.tabId >= 0) ready.then(() => resetTab(d.tabId, d.url));
@@ -203,15 +206,12 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ['<all_urls>'] }
 );
 
-// Запросы, заблокированные правилами DNR, гарантированно видны здесь.
-chrome.webRequest.onErrorOccurred.addListener(
-  (d) => {
-    if (d.error && d.error.includes('BLOCKED_BY_CLIENT')) onRequest(d);
-  },
-  { urls: ['<all_urls>'] }
-);
+// Запросы, заблокированные правилами DNR, гарантированно видны здесь
+// (Chromium: net::ERR_BLOCKED_BY_CLIENT, Firefox: NS_ERROR_*). Повторы
+// отсекаются по requestId в onRequest.
+ext.webRequest.onErrorOccurred.addListener(onRequest, { urls: ['<all_urls>'] });
 
-chrome.tabs.onRemoved.addListener(async (tabId) => {
+ext.tabs.onRemoved.addListener(async (tabId) => {
   await ready;
   delete tabs[tabId];
   saveSoon();
@@ -220,7 +220,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 // ---------- Действия пользователя ----------
 
 async function saveLists() {
-  await chrome.storage.local.set({ allowed: settings.allowed, blocked: settings.blocked });
+  await ext.storage.local.set({ allowed: settings.allowed, blocked: settings.blocked });
   await syncRules();
   refreshStatuses();
 }
@@ -244,7 +244,7 @@ async function setSettings(patch) {
   for (const key of ['notify', 'autoBlock']) {
     if (typeof patch[key] === 'boolean') settings[key] = patch[key];
   }
-  await chrome.storage.local.set({ notify: settings.notify, autoBlock: settings.autoBlock });
+  await ext.storage.local.set({ notify: settings.notify, autoBlock: settings.autoBlock });
   await syncRules();
   refreshStatuses();
   for (const tabId of Object.keys(tabs)) pushTab(tabId);
@@ -271,7 +271,7 @@ async function handle(msg, sender) {
   return null;
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handle(msg, sender).then(sendResponse, (e) => sendResponse({ error: String(e) }));
   return true;
 });

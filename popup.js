@@ -1,5 +1,6 @@
+const ext = globalThis.browser ?? globalThis.chrome;
 const $ = (id) => document.getElementById(id);
-const send = (msg) => chrome.runtime.sendMessage(msg);
+const send = (msg) => ext.runtime.sendMessage(msg);
 
 const STATUS = {
   pending: ['ожидает решения', 'wait'],
@@ -123,8 +124,20 @@ async function setSetting(key, value) {
   renderPage(await send({ type: 'setSettings', patch: { [key]: value }, tabId }));
 }
 
+// В Firefox пользователь может отозвать доступ к сайтам; без него webRequest
+// и уведомления не работают (блокировка DNR при этом продолжает действовать).
+async function checkAccess() {
+  const origins = { origins: ['<all_urls>'] };
+  const ok = await ext.permissions.contains(origins);
+  $('access').hidden = ok;
+  $('grant').onclick = async () => {
+    if (await ext.permissions.request(origins)) $('access').hidden = true;
+  };
+}
+
 async function main() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  checkAccess();
+  const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
   tabId = tab ? tab.id : null;
 
   $('notify').addEventListener('change', (e) => setSetting('notify', e.target.checked));

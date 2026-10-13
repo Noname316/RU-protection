@@ -2,6 +2,8 @@
 (() => {
   if (window.top !== window) return;
 
+  const ext = globalThis.browser ?? globalThis.chrome;
+
   const AUTO_HIDE_MS = 8000;
 
   let state = { settings: { notify: true, autoBlock: false }, page: null, items: [] };
@@ -56,7 +58,7 @@
   `;
 
   function send(msg) {
-    return chrome.runtime.sendMessage(msg).catch(() => null);
+    return ext.runtime.sendMessage(msg).catch(() => null);
   }
 
   function ensureRoot() {
@@ -112,6 +114,12 @@
     return el('div', { class: 'row' }, el('div', { class: 'grow' }, el('div', { class: 'dom' }, it.host), meta), btns);
   }
 
+  function title(items, pending) {
+    if (pending.length) return 'Обращение к другой доменной зоне';
+    if (items.some((i) => i.status === 'auto' || i.status === 'blocked')) return 'Внешние обращения заблокированы';
+    return 'Обращения к другим зонам';
+  }
+
   function hide() {
     clearTimeout(hideTimer);
     if (host) host.remove();
@@ -140,7 +148,7 @@
     const box = el('div', { class: 'box', role: 'dialog', 'aria-label': 'RU-защита' },
       el('div', { class: 'head' },
         el('div', { class: 'grow' },
-          el('div', { class: 'title' }, pending.length ? 'Обращение к другой доменной зоне' : 'Внешние обращения заблокированы'),
+          el('div', { class: 'title' }, title(items, pending)),
           el('div', { class: 'sub' }, `${page} обращается к доменам вне .ru/.рф`)),
         el('button', {
           class: 'x', title: 'Закрыть', 'aria-label': 'Закрыть',
@@ -190,7 +198,7 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  ext.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === 'state') apply(msg);
   });
 
