@@ -10,22 +10,33 @@
 //   autoBlock = off, notify = on  — новый внешний домен блокируется до решения
 //                               пользователя, справа внизу появляется запрос.
 //   autoBlock = off, notify = off — блокируется только чёрный список.
+//
+// Списки: общие (для всех сайтов) и отдельные для каждого сайта. Решение для
+// сайта важнее общего. Приоритеты правил DNR (больше — важнее):
+//   1 — общая блокировка / общий чёрный список
+//   2 — общий белый список
+//   3 — чёрный список сайта
+//   4 — белый список сайта
 
 // Firefox даёт API как `browser`, Chromium — как `chrome`; оба возвращают промисы.
 const ext = globalThis.browser ?? globalThis.chrome;
+// В Firefox lib.js подключён в манифесте перед этим файлом, в Chromium — здесь.
+if (typeof RU === 'undefined') importScripts('lib.js');
 
-const ZONES = ['ru', 'xn--p1ai']; // .ru и .рф (punycode)
-const DEFAULTS = { notify: true, autoBlock: false, allowed: [], blocked: [] };
+const { ZONES, hostOf, inList, inZone, siteOf } = RU;
+const DEFAULTS = { notify: true, autoBlock: false, scope: 'site', allowed: [], blocked: [], sites: {} };
 const BASE_CONDITION = { initiatorDomains: ZONES, excludedResourceTypes: ['main_frame'] };
+const SITE_RULES_FROM = 100;
 
 let settings = { ...DEFAULTS };
-// tabs[tabId] = { page: 'site.ru', items: { host: { host, status, count, reload } } }
+// tabs[tabId] = { page: 'www.shop.ru', items: { host: { host, site, status, scope, count, reload } } }
 // status: 'pending' | 'auto' | 'blocked' | 'allowed' | 'passed'
+// scope:  'site' | 'global' | null — откуда взялось решение
 let tabs = {};
 const ready = init();
 
 async function init() {
-  settings = { ...DEFAULTS, ...(await ext.storage.local.get(DEFAULTS)) };
+  settings = structuredClone({ ...DEFAULTS, ...(await ext.storage.local.get(DEFAULTS)) });
   try {
     tabs = (await ext.storage.session.get({ tabs: {} })).tabs || {};
   } catch {
@@ -34,28 +45,19 @@ async function init() {
   await syncRules();
 }
 
-// ---------- Утилиты ----------
+// ---------- Решение по домену ----------
 
-function hostOf(url) {
-  try {
-    return new URL(url).hostname.replace(/\.$/, '').toLowerCase();
-  } catch {
-    return '';
+function verdict(host, site) {
+  const own = settings.sites[site];
+  if (own) {
+    if (inList(host, own.allowed)) return { status: 'allowed', scope: 'site' };
+    if (inList(host, own.blocked)) return { status: 'blocked', scope: 'site' };
   }
-}
-
-function inList(host, list) {
-  return list.some((d) => host === d || host.endsWith('.' + d));
-}
-
-const inZone = (host) => inList(host, ZONES);
-
-function statusFor(host) {
-  if (inList(host, settings.allowed)) return 'allowed';
-  if (inList(host, settings.blocked)) return 'blocked';
-  if (settings.autoBlock) return 'auto';
-  if (settings.notify) return 'pending';
-  return 'passed';
+  if (inList(host, settings.allowed)) return { status: 'allowed', scope: 'global' };
+  if (inList(host, settings.blocked)) return { status: 'blocked', scope: 'global' };
+  if (settings.autoBlock) return { status: 'auto', scope: null };
+  if (settings.notify) return { status: 'pending', scope: null };
+  return { status: 'passed', scope: null };
 }
 
 const isBlocking = (status) => status === 'pending' || status === 'auto' || status === 'blocked';
@@ -69,7 +71,7 @@ function syncRules() {
   return rulesQueue;
 }
 
-async function applyRules() {
+function buildRules() {
   const rules = [];
   if (settings.autoBlock || settings.notify) {
     rules.push({
@@ -94,10 +96,24 @@ async function applyRules() {
       condition: { ...BASE_CONDITION, requestDomains: settings.allowed },
     });
   }
+  let id = SITE_RULES_FROM;
+  for (const [site, own] of Object.entries(settings.sites)) {
+    const condition = { initiatorDomains: [site], excludedResourceTypes: ['main_frame'] };
+    if (own.blocked.length) {
+      rules.push({ id: id++, priority: 3, action: { type: 'block' }, condition: { ...condition, requestDomains: own.blocked } });
+    }
+    if (own.allowed.length) {
+      rules.push({ id: id++, priority: 4, action: { type: 'allow' }, condition: { ...condition, requestDomains: own.allowed } });
+    }
+  }
+  return rules;
+}
+
+async function applyRules() {
   const old = await ext.declarativeNetRequest.getDynamicRules();
   await ext.declarativeNetRequest.updateDynamicRules({
     removeRuleIds: old.map((r) => r.id),
-    addRules: rules,
+    addRules: buildRules(),
   });
 }
 
@@ -111,9 +127,11 @@ function saveSoon() {
 
 function view(tabId) {
   const t = tabs[tabId];
+  const page = t ? t.page : null;
   return {
-    settings: { notify: settings.notify, autoBlock: settings.autoBlock },
-    page: t ? t.page : null,
+    settings: { notify: settings.notify, autoBlock: settings.autoBlock, scope: settings.scope },
+    page,
+    site: page ? siteOf(page) : null,
     items: t ? Object.values(t.items) : [],
   };
 }
@@ -151,12 +169,13 @@ function refreshStatuses() {
   for (const [tabId, t] of Object.entries(tabs)) {
     let changed = false;
     for (const it of Object.values(t.items)) {
-      const next = statusFor(it.host);
-      if (next === it.status) continue;
+      const next = verdict(it.host, it.site);
+      if (next.status === it.status && next.scope === it.scope) continue;
       // Уже заблокированный ресурс появится только после перезагрузки страницы.
-      if (isBlocking(it.status) && !isBlocking(next)) it.reload = true;
-      if (isBlocking(next)) it.reload = false;
-      it.status = next;
+      if (isBlocking(it.status) && !isBlocking(next.status)) it.reload = true;
+      if (isBlocking(next.status)) it.reload = false;
+      it.status = next.status;
+      it.scope = next.scope;
       changed = true;
     }
     if (changed) pushTab(tabId);
@@ -187,10 +206,12 @@ async function onRequest(details) {
   if (it) {
     it.count++;
   } else {
-    const status = statusFor(to);
+    // Сайт берём по инициатору запроса — так же, как его видят правила DNR.
+    const site = siteOf(from);
+    const v = verdict(to, site);
     // Разрешённые заранее домены — обычный трафик, его не показываем.
-    if (status === 'allowed') return;
-    t.items[to] = { host: to, status, count: 1, reload: false };
+    if (v.status === 'allowed') return;
+    t.items[to] = { host: to, site, ...v, count: 1, reload: false };
   }
   pushTab(tabId);
 }
@@ -219,24 +240,56 @@ ext.tabs.onRemoved.addListener(async (tabId) => {
 
 // ---------- Действия пользователя ----------
 
+const LIST_KEYS = ['allowed', 'blocked'];
+
+function siteLists(site, create) {
+  if (!settings.sites[site] && create) settings.sites[site] = { allowed: [], blocked: [] };
+  return settings.sites[site];
+}
+
+function without(list, hosts) {
+  return list.filter((d) => !hosts.has(d));
+}
+
 async function saveLists() {
-  await ext.storage.local.set({ allowed: settings.allowed, blocked: settings.blocked });
+  for (const [site, own] of Object.entries(settings.sites)) {
+    if (!own.allowed.length && !own.blocked.length) delete settings.sites[site];
+  }
+  await ext.storage.local.set({ allowed: settings.allowed, blocked: settings.blocked, sites: settings.sites });
   await syncRules();
   refreshStatuses();
 }
 
-async function decide(hosts, decision) {
+// entries: [{ host, site }]; scope: 'site' — только для сайта, 'global' — для всех.
+async function decide(entries, decision, scope) {
   const add = decision === 'allow' ? 'allowed' : 'blocked';
   const other = add === 'allowed' ? 'blocked' : 'allowed';
-  const set = new Set(hosts.map((h) => String(h).toLowerCase()).filter(Boolean));
-  settings[other] = settings[other].filter((d) => !set.has(d));
-  for (const h of set) if (!settings[add].includes(h)) settings[add].push(h);
+  for (const { host, site } of entries) {
+    const one = new Set([host]);
+    if (scope === 'site' && site) {
+      const own = siteLists(site, true);
+      own[other] = without(own[other], one);
+      if (!own[add].includes(host)) own[add].push(host);
+    } else {
+      settings[other] = without(settings[other], one);
+      if (!settings[add].includes(host)) settings[add].push(host);
+      // Решение «для всех» отменяет прежнее решение для этого сайта.
+      const own = site && siteLists(site, false);
+      if (own) for (const key of LIST_KEYS) own[key] = without(own[key], one);
+    }
+  }
   await saveLists();
 }
 
-async function unlist(list, host) {
-  if (list !== 'allowed' && list !== 'blocked') return;
-  settings[list] = settings[list].filter((d) => d !== host);
+async function unlist(list, host, site) {
+  if (!LIST_KEYS.includes(list)) return;
+  const target = site ? siteLists(site, false) : settings;
+  if (target) target[list] = target[list].filter((d) => d !== host);
+  await saveLists();
+}
+
+async function forgetSite(site) {
+  delete settings.sites[site];
   await saveLists();
 }
 
@@ -244,10 +297,15 @@ async function setSettings(patch) {
   for (const key of ['notify', 'autoBlock']) {
     if (typeof patch[key] === 'boolean') settings[key] = patch[key];
   }
-  await ext.storage.local.set({ notify: settings.notify, autoBlock: settings.autoBlock });
+  if (patch.scope === 'site' || patch.scope === 'global') settings.scope = patch.scope;
+  await ext.storage.local.set({ notify: settings.notify, autoBlock: settings.autoBlock, scope: settings.scope });
   await syncRules();
   refreshStatuses();
   for (const tabId of Object.keys(tabs)) pushTab(tabId);
+}
+
+function getLists() {
+  return { allowed: settings.allowed, blocked: settings.blocked, sites: settings.sites };
 }
 
 async function handle(msg, sender) {
@@ -256,14 +314,24 @@ async function handle(msg, sender) {
   switch (msg.type) {
     case 'getState':
       return view(tabId);
-    case 'decide':
-      await decide(msg.hosts, msg.decision);
+    case 'decide': {
+      const t = tabs[tabId];
+      const fallback = msg.site || (t && t.page ? siteOf(t.page) : null);
+      const entries = (msg.hosts || []).map((h) => {
+        const host = String(h).toLowerCase();
+        return { host, site: t?.items[host]?.site || fallback };
+      });
+      await decide(entries, msg.decision, msg.scope || settings.scope);
       return view(tabId);
+    }
     case 'unlist':
-      await unlist(msg.list, msg.host);
-      return { allowed: settings.allowed, blocked: settings.blocked };
+      await unlist(msg.list, msg.host, msg.site);
+      return getLists();
+    case 'forgetSite':
+      await forgetSite(msg.site);
+      return getLists();
     case 'getLists':
-      return { allowed: settings.allowed, blocked: settings.blocked };
+      return getLists();
     case 'setSettings':
       await setSettings(msg.patch || {});
       return view(tabId);

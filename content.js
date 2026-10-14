@@ -6,7 +6,7 @@
 
   const AUTO_HIDE_MS = 8000;
 
-  let state = { settings: { notify: true, autoBlock: false }, page: null, items: [] };
+  let state = { settings: { notify: true, autoBlock: false, scope: 'site' }, page: null, site: null, items: [] };
   const decidedHere = new Set(); // домены, по которым решение принято на этой странице
   let dismissedHosts = null; // при закрытии запоминаем, что уже видели
   let hovered = false;
@@ -43,6 +43,11 @@
     .allow { background: #1f883d; color: #fff; } .allow:hover { background: #1a7f37; }
     .block { background: #cf222e; color: #fff; } .block:hover { background: #a40e26; }
     .ghost { background: #fff; color: #1f2328; border-color: #d0d7de !important; } .ghost:hover { background: #f3f4f6; }
+    .scope { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; border-bottom: 1px solid #d0d7de; font-size: 12px; color: #59636e; }
+    .seg { display: inline-flex; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
+    .seg button { font: 600 12px system-ui, sans-serif; border: 0; padding: 4px 9px; cursor: pointer; background: #fff; color: #59636e; }
+    .seg button + button { border-left: 1px solid #d0d7de; }
+    .seg button.on { background: #0969da; color: #fff; }
     .foot { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; background: #f6f8fa; border-top: 1px solid #d0d7de; }
     .line { display: flex; align-items: center; gap: 6px; }
     .foot .grow { font-size: 12px; color: #59636e; }
@@ -50,6 +55,10 @@
       .box { color: #e6edf3; background: #161b22; border-color: #30363d; }
       .head, .foot { background: #0d1117; border-color: #30363d; }
       .row { border-color: #21262d; }
+      .scope, .seg, .seg button + button { border-color: #30363d; }
+      .scope { color: #9198a1; }
+      .seg button { background: #21262d; color: #9198a1; }
+      .seg button.on { background: #1f6feb; color: #fff; }
       .sub, .meta, .x, .foot .grow { color: #9198a1; }
       .x:hover { color: #e6edf3; }
       .meta.bad { color: #ff7b72; } .meta.ok { color: #3fb950; } .meta.wait { color: #d29922; }
@@ -86,8 +95,24 @@
 
   async function decide(hosts, decision) {
     hosts.forEach((h) => decidedHere.add(h));
-    const res = await send({ type: 'decide', hosts, decision });
+    const res = await send({ type: 'decide', hosts, decision, scope: state.settings.scope });
     if (res && res.items) apply(res);
+  }
+
+  async function setScope(scope) {
+    const res = await send({ type: 'setSettings', patch: { scope } });
+    if (res && res.items) apply(res);
+  }
+
+  const where = (it) => (it.scope === 'site' ? ' на этом сайте' : it.scope === 'global' ? ' везде' : '');
+
+  function scopeBar() {
+    const scope = state.settings.scope;
+    const site = RU.display(state.site || location.hostname);
+    const opt = (value, text) =>
+      el('button', { class: scope === value ? 'on' : '', 'aria-pressed': String(scope === value), onclick: () => setScope(value) }, text);
+    return el('div', { class: 'scope' }, 'Решение действует:',
+      el('div', { class: 'seg' }, opt('site', `на ${site}`), opt('global', 'на всех сайтах')));
   }
 
   function rowFor(it) {
@@ -103,15 +128,15 @@
       btns = el('div', { class: 'btns' },
         el('button', { class: 'b ghost', onclick: () => decide([it.host], 'allow') }, 'Разрешить'));
     } else if (it.status === 'blocked') {
-      meta = el('div', { class: 'meta bad' }, 'заблокирован' + times);
+      meta = el('div', { class: 'meta bad' }, 'заблокирован' + where(it) + times);
       btns = el('div', { class: 'btns' },
         el('button', { class: 'b ghost', onclick: () => decide([it.host], 'allow') }, 'Разрешить'));
     } else {
-      meta = el('div', { class: 'meta ok' }, 'разрешён' + (it.reload ? ' · нужна перезагрузка' : '') + times);
+      meta = el('div', { class: 'meta ok' }, 'разрешён' + where(it) + (it.reload ? ' · нужна перезагрузка' : '') + times);
       btns = el('div', { class: 'btns' },
         el('button', { class: 'b ghost', onclick: () => decide([it.host], 'block') }, 'Заблокировать'));
     }
-    return el('div', { class: 'row' }, el('div', { class: 'grow' }, el('div', { class: 'dom' }, it.host), meta), btns);
+    return el('div', { class: 'row' }, el('div', { class: 'grow' }, el('div', { class: 'dom' }, RU.display(it.host)), meta), btns);
   }
 
   function title(items, pending) {
@@ -144,7 +169,7 @@
     items = [...pending, ...items.filter((i) => i.status !== 'pending')];
 
     ensureRoot();
-    const page = state.page || location.hostname;
+    const page = RU.display(state.page || location.hostname);
     const box = el('div', { class: 'box', role: 'dialog', 'aria-label': 'RU-защита' },
       el('div', { class: 'head' },
         el('div', { class: 'grow' },
@@ -154,6 +179,7 @@
           class: 'x', title: 'Закрыть', 'aria-label': 'Закрыть',
           onclick: () => { dismissedHosts = new Set(state.items.map((i) => i.host)); hide(); },
         }, '×')),
+      scopeBar(),
       el('div', { class: 'list' }, ...items.map(rowFor)));
 
     const foot = el('div', { class: 'foot' });

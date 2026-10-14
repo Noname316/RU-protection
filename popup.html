@@ -38,17 +38,25 @@
 
   <section>
     <h2 id="pageTitle">Эта страница</h2>
+    <div id="scope" class="scope" hidden>
+      Решение действует:
+      <div class="seg">
+        <button data-scope="site" id="scopeSite">на этом сайте</button>
+        <button data-scope="global">на всех сайтах</button>
+      </div>
+    </div>
     <ul id="pageList" class="list"></ul>
   </section>
 
   <section>
     <div class="tabs" role="tablist">
-      <button role="tab" data-list="allowed" class="active">Разрешённые <span id="allowedCount"></span></button>
-      <button role="tab" data-list="blocked">Заблокированные <span id="blockedCount"></span></button>
+      <button role="tab" data-view="sites">По сайтам <span id="sitesCount"></span></button>
+      <button role="tab" data-view="global">Для всех сайтов <span id="globalCount"></span></button>
     </div>
     <ul id="lists" class="list"></ul>
   </section>
 
+  <script src="lib.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

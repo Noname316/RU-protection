@@ -9,9 +9,12 @@ const STATUS = {
   allowed: ['разрешён', 'ok'],
   passed: ['пропущен', 'muted'],
 };
+const WHERE = { site: ' на этом сайте', global: ' везде' };
 
 let tabId = null;
-let currentList = 'allowed';
+let pageSite = null;
+let currentView = 'sites';
+let lists = { allowed: [], blocked: [], sites: {} };
 
 function li(...children) {
   const n = document.createElement('li');
@@ -32,7 +35,7 @@ function domainCell(host, statusText, statusCls) {
   wrap.className = 'grow';
   const d = document.createElement('span');
   d.className = 'dom';
-  d.textContent = host;
+  d.textContent = RU.display(host);
   wrap.append(d);
   if (statusText) {
     const s = document.createElement('span');
@@ -49,7 +52,7 @@ function empty(text) {
   return n;
 }
 
-function renderMode({ notify, autoBlock }) {
+function renderMode({ notify, autoBlock, scope }) {
   $('notify').checked = notify;
   $('autoBlock').checked = autoBlock;
   $('mode').textContent = autoBlock
@@ -57,20 +60,30 @@ function renderMode({ notify, autoBlock }) {
       (notify ? ' О блокировке сообщается уведомлением.' : '')
     : notify
       ? 'Новый внешний домен блокируется до вашего решения — справа внизу появится запрос «Разрешить / Заблокировать».'
-      : 'Защита пассивна: блокируются только домены из списка заблокированных.';
+      : 'Защита пассивна: блокируются только домены из списков заблокированных.';
+  document.querySelectorAll('#scope button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.scope === scope);
+    b.setAttribute('aria-pressed', String(b.dataset.scope === scope));
+  });
+}
+
+async function refresh(state) {
+  renderPage(state || (await send({ type: 'getState', tabId })));
+  renderLists(await send({ type: 'getLists' }));
 }
 
 async function decide(host, decision) {
-  const state = await send({ type: 'decide', hosts: [host], decision, tabId });
-  renderPage(state);
-  renderLists(await send({ type: 'getLists' }));
+  await refresh(await send({ type: 'decide', hosts: [host], decision, tabId }));
 }
 
 function renderPage(state) {
   renderMode(state.settings);
+  pageSite = state.site;
+  $('scope').hidden = !pageSite;
+  if (pageSite) $('scopeSite').textContent = `на ${RU.display(pageSite)}`;
   const list = $('pageList');
   list.replaceChildren();
-  $('pageTitle').textContent = state.page ? `Эта страница: ${state.page}` : 'Эта страница';
+  $('pageTitle').textContent = state.page ? `Эта страница: ${RU.display(state.page)}` : 'Эта страница';
   if (!state.page && !state.items.length) {
     list.append(empty('Защита работает только на сайтах .ru и .рф.'));
     return;
@@ -82,7 +95,8 @@ function renderPage(state) {
   const order = { pending: 0, auto: 1, blocked: 2, allowed: 3, passed: 4 };
   for (const it of [...state.items].sort((a, b) => order[a.status] - order[b.status])) {
     const [text, cls] = STATUS[it.status] || ['', 'muted'];
-    const suffix = (it.reload ? ' · нужна перезагрузка' : '') + (it.count > 1 ? ` · ${it.count} запр.` : '');
+    const suffix =
+      (WHERE[it.scope] || '') + (it.reload ? ' · нужна перезагрузка' : '') + (it.count > 1 ? ` · ${it.count} запр.` : '');
     const blocking = it.status !== 'allowed' && it.status !== 'passed';
     list.append(li(
       domainCell(it.host, text + suffix, cls),
@@ -93,31 +107,65 @@ function renderPage(state) {
   }
 }
 
-let lists = { allowed: [], blocked: [] };
+// Строки списка: сначала разрешённые, затем заблокированные, каждая с кнопкой удаления.
+function entryRows(own, site) {
+  const rows = [];
+  for (const [key, text, cls] of [['allowed', 'разрешён', 'ok'], ['blocked', 'заблокирован', 'bad']]) {
+    for (const host of [...own[key]].sort()) {
+      const rm = button('×', 'rm', async () => {
+        renderLists(await send({ type: 'unlist', list: key, host, site }));
+        renderPage(await send({ type: 'getState', tabId }));
+      });
+      rm.title = 'Удалить из списка';
+      rows.push(li(domainCell(host, text, cls), rm));
+    }
+  }
+  return rows;
+}
+
+function siteHeader(site) {
+  const name = document.createElement('span');
+  name.className = 'grow';
+  name.textContent = RU.display(site);
+  if (site === pageSite) {
+    const here = document.createElement('span');
+    here.className = 'here';
+    here.textContent = ' · эта страница';
+    name.append(here);
+  }
+  const reset = button('сбросить', 'link', async () => {
+    renderLists(await send({ type: 'forgetSite', site }));
+    renderPage(await send({ type: 'getState', tabId }));
+  });
+  reset.title = 'Удалить все решения для этого сайта';
+  const row = li(name, reset);
+  row.className = 'site';
+  return row;
+}
 
 function renderLists(next) {
   if (next) lists = next;
-  $('allowedCount').textContent = lists.allowed.length ? `(${lists.allowed.length})` : '';
-  $('blockedCount').textContent = lists.blocked.length ? `(${lists.blocked.length})` : '';
+  const sites = Object.keys(lists.sites).sort((a, b) => (a === pageSite ? -1 : b === pageSite ? 1 : a.localeCompare(b)));
+  const globalCount = lists.allowed.length + lists.blocked.length;
+  $('sitesCount').textContent = sites.length ? `(${sites.length})` : '';
+  $('globalCount').textContent = globalCount ? `(${globalCount})` : '';
   document.querySelectorAll('.tabs button').forEach((b) => {
-    b.classList.toggle('active', b.dataset.list === currentList);
-    b.setAttribute('aria-selected', String(b.dataset.list === currentList));
+    b.classList.toggle('active', b.dataset.view === currentView);
+    b.setAttribute('aria-selected', String(b.dataset.view === currentView));
   });
+
   const ul = $('lists');
   ul.replaceChildren();
-  const items = [...lists[currentList]].sort();
-  if (!items.length) {
-    ul.append(empty('Список пуст.'));
+  if (currentView === 'global') {
+    const rows = entryRows(lists, null);
+    ul.append(...(rows.length ? rows : [empty('Общих решений пока нет.')]));
     return;
   }
-  for (const host of items) {
-    const rm = button('×', 'rm', async () => {
-      renderLists(await send({ type: 'unlist', list: currentList, host }));
-      renderPage(await send({ type: 'getState', tabId }));
-    });
-    rm.title = 'Удалить из списка';
-    ul.append(li(domainCell(host), rm));
+  if (!sites.length) {
+    ul.append(empty('Решений для отдельных сайтов пока нет.'));
+    return;
   }
+  for (const site of sites) ul.append(siteHeader(site), ...entryRows(lists.sites[site], site));
 }
 
 async function setSetting(key, value) {
@@ -142,16 +190,19 @@ async function main() {
 
   $('notify').addEventListener('change', (e) => setSetting('notify', e.target.checked));
   $('autoBlock').addEventListener('change', (e) => setSetting('autoBlock', e.target.checked));
+  document.querySelectorAll('#scope button').forEach((b) =>
+    b.addEventListener('click', () => setSetting('scope', b.dataset.scope))
+  );
   document.querySelectorAll('.tabs button').forEach((b) =>
     b.addEventListener('click', () => {
-      currentList = b.dataset.list;
+      currentView = b.dataset.view;
       renderLists();
     })
   );
 
-  const [state, l] = await Promise.all([send({ type: 'getState', tabId }), send({ type: 'getLists' })]);
-  renderPage(state);
-  renderLists(l);
+  const state = await send({ type: 'getState', tabId });
+  if (!state.site) currentView = 'global';
+  await refresh(state);
 }
 
 main();
