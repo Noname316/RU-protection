@@ -2,12 +2,30 @@
 const RU = (() => {
   const ZONES = ['ru', 'xn--p1ai']; // .ru и .рф (punycode)
 
-  // Публичные суффиксы второго уровня в .ru (из Public Suffix List):
-  // сайтом считается домен на уровень ниже, например city.msk.ru.
+  // Публичные суффиксы (подмножество Public Suffix List): основным доменом
+  // считается домен на уровень ниже — city.msk.ru, bbc.co.uk, user.github.io.
   const SUFFIXES = new Set([
     'ac.ru', 'edu.ru', 'gov.ru', 'int.ru', 'mil.ru', 'test.ru',
     'com.ru', 'net.ru', 'org.ru', 'pp.ru', 'msk.ru', 'spb.ru',
+    // хостинги, где у каждого клиента свой поддомен
+    'github.io', 'gitlab.io', 'blogspot.com', 'appspot.com', 'herokuapp.com',
+    'firebaseapp.com', 'web.app', 'netlify.app', 'vercel.app', 'pages.dev',
+    'workers.dev', 'onrender.com', 'glitch.me', 'cloudfront.net',
+    'azurewebsites.net', 's3.amazonaws.com',
   ]);
+  // Второй уровень национальных зон: co.uk, com.au, co.jp, com.br …
+  const CC_SECOND = new Set([
+    'ac', 'co', 'com', 'edu', 'go', 'gob', 'gov', 'gv', 'ltd', 'me',
+    'mil', 'ne', 'net', 'nic', 'nom', 'or', 'org', 'plc', 'sch',
+  ]);
+
+  function isSuffix(s) {
+    if (SUFFIXES.has(s)) return true;
+    const p = s.split('.');
+    return p.length === 2 && p[1].length === 2 && !ZONES.includes(p[1]) && CC_SECOND.has(p[0]);
+  }
+
+  const isIP = (host) => /^\d+(\.\d+){3}$/.test(host) || host.includes(':');
 
   function hostOf(url) {
     try {
@@ -23,12 +41,14 @@ const RU = (() => {
 
   const inZone = (host) => inList(host, ZONES);
 
-  // Сайт = регистрируемый домен: www.shop.ru и m.shop.ru → shop.ru.
+  // Основной (регистрируемый) домен: www.shop.ru → shop.ru, play.google.com → google.com.
   function siteOf(host) {
+    if (!host || isIP(host)) return host;
     const parts = host.split('.');
-    if (parts.length <= 2) return host;
-    const two = parts.slice(-2).join('.');
-    return parts.slice(SUFFIXES.has(two) ? -3 : -2).join('.');
+    for (let i = 1; i < parts.length - 1; i++) {
+      if (isSuffix(parts.slice(i).join('.'))) return parts.slice(i - 1).join('.');
+    }
+    return parts.slice(-2).join('.');
   }
 
   // RFC 3492: метка punycode без префикса xn-- → Unicode.
@@ -80,5 +100,13 @@ const RU = (() => {
       .join('.');
   }
 
-  return { ZONES, hostOf, inList, inZone, siteOf, display };
+  // Подпись под основным доменом: к каким его адресам обращалась страница.
+  function hostsLine(item) {
+    const hosts = item.hosts || [];
+    if (hosts.every((h) => h === item.host)) return '';
+    const shown = hosts.slice(0, 4).map(display).join(', ');
+    return hosts.length > 4 ? `${shown} и ещё ${hosts.length - 4}` : shown;
+  }
+
+  return { ZONES, hostOf, inList, inZone, siteOf, display, hostsLine };
 })();

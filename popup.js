@@ -30,13 +30,19 @@ function button(text, cls, onclick) {
   return b;
 }
 
-function domainCell(host, statusText, statusCls) {
+function domainCell(host, statusText, statusCls, subsText) {
   const wrap = document.createElement('div');
   wrap.className = 'grow';
   const d = document.createElement('span');
   d.className = 'dom';
   d.textContent = RU.display(host);
   wrap.append(d);
+  if (subsText) {
+    const s = document.createElement('span');
+    s.className = 'subs';
+    s.textContent = subsText;
+    wrap.append(s);
+  }
   if (statusText) {
     const s = document.createElement('span');
     s.className = 'st ' + statusCls;
@@ -99,7 +105,7 @@ function renderPage(state) {
       (WHERE[it.scope] || '') + (it.reload ? ' · нужна перезагрузка' : '') + (it.count > 1 ? ` · ${it.count} запр.` : '');
     const blocking = it.status !== 'allowed' && it.status !== 'passed';
     list.append(li(
-      domainCell(it.host, text + suffix, cls),
+      domainCell(it.host, text + suffix, cls, RU.hostsLine(it)),
       blocking
         ? button('Разрешить', 'b allow', () => decide(it.host, 'allow'))
         : button('Заблокировать', 'b block', () => decide(it.host, 'block'))

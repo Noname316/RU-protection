@@ -36,6 +36,7 @@
     .row > .grow { flex: 1 1 100%; }
     .row:last-child { border-bottom: 0; }
     .dom { font: 600 12.5px/1.3 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+    .subs { font: 11px/1.3 ui-monospace, Consolas, monospace; color: #59636e; overflow-wrap: anywhere; }
     .meta { font-size: 11.5px; color: #59636e; }
     .meta.bad { color: #cf222e; } .meta.ok { color: #1a7f37; } .meta.wait { color: #9a6700; }
     .btns { display: flex; gap: 6px; flex-shrink: 0; }
@@ -59,7 +60,7 @@
       .scope { color: #9198a1; }
       .seg button { background: #21262d; color: #9198a1; }
       .seg button.on { background: #1f6feb; color: #fff; }
-      .sub, .meta, .x, .foot .grow { color: #9198a1; }
+      .sub, .subs, .meta, .x, .foot .grow { color: #9198a1; }
       .x:hover { color: #e6edf3; }
       .meta.bad { color: #ff7b72; } .meta.ok { color: #3fb950; } .meta.wait { color: #d29922; }
       .ghost { background: #21262d; color: #e6edf3; border-color: #30363d !important; } .ghost:hover { background: #30363d; }
@@ -136,7 +137,13 @@
       btns = el('div', { class: 'btns' },
         el('button', { class: 'b ghost', onclick: () => decide([it.host], 'block') }, 'Заблокировать'));
     }
-    return el('div', { class: 'row' }, el('div', { class: 'grow' }, el('div', { class: 'dom' }, RU.display(it.host)), meta), btns);
+    const subs = RU.hostsLine(it);
+    return el('div', { class: 'row' },
+      el('div', { class: 'grow' },
+        el('div', { class: 'dom' }, RU.display(it.host)),
+        subs ? el('div', { class: 'subs' }, subs) : null,
+        meta),
+      btns);
   }
 
   function title(items, pending) {

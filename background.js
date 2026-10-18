@@ -12,7 +12,9 @@
 //   autoBlock = off, notify = off — блокируется только чёрный список.
 //
 // Списки: общие (для всех сайтов) и отдельные для каждого сайта. Решение для
-// сайта важнее общего. Приоритеты правил DNR (больше — важнее):
+// сайта важнее общего. В списках хранятся только основные домены: решение
+// для google.com действует и на play.google.com, и на api.google.com.
+// Приоритеты правил DNR (больше — важнее):
 //   1 — общая блокировка / общий чёрный список
 //   2 — общий белый список
 //   3 — чёрный список сайта
@@ -29,7 +31,8 @@ const BASE_CONDITION = { initiatorDomains: ZONES, excludedResourceTypes: ['main_
 const SITE_RULES_FROM = 100;
 
 let settings = { ...DEFAULTS };
-// tabs[tabId] = { page: 'www.shop.ru', items: { host: { host, site, status, scope, count, reload } } }
+// tabs[tabId] = { page: 'www.shop.ru', items: { domain: { host: domain, hosts, site, status, scope, count, reload } } }
+// host — основной домен (google.com), hosts — встреченные адреса (play.google.com, …)
 // status: 'pending' | 'auto' | 'blocked' | 'allowed' | 'passed'
 // scope:  'site' | 'global' | null — откуда взялось решение
 let tabs = {};
@@ -42,7 +45,23 @@ async function init() {
   } catch {
     tabs = {};
   }
+  if (normalizeLists()) {
+    await ext.storage.local.set({ allowed: settings.allowed, blocked: settings.blocked, sites: settings.sites });
+  }
   await syncRules();
+}
+
+// Прежние версии записывали каждый поддомен отдельно — сводим их к основным
+// доменам. Если домен оказался и среди разрешённых, и среди заблокированных,
+// остаётся блокировка. Возвращает true, если списки изменились.
+function normalizeLists() {
+  const snapshot = () => JSON.stringify([settings.allowed, settings.blocked, settings.sites]);
+  const before = snapshot();
+  for (const lists of [settings, ...Object.values(settings.sites)]) {
+    lists.blocked = [...new Set(lists.blocked.map(siteOf))];
+    lists.allowed = [...new Set(lists.allowed.map(siteOf))].filter((d) => !lists.blocked.includes(d));
+  }
+  return snapshot() !== before;
 }
 
 // ---------- Решение по домену ----------
@@ -202,16 +221,20 @@ async function onRequest(details) {
   const t = (tabs[tabId] ||= { page: null, items: {} });
   if (!t.page) t.page = from;
 
-  const it = t.items[to];
+  // Поддомены одного основного домена показываются и решаются вместе.
+  const domain = siteOf(to);
+  const it = t.items[domain];
   if (it) {
     it.count++;
+    const hosts = (it.hosts ||= []);
+    if (!hosts.includes(to) && hosts.length < 20) hosts.push(to);
   } else {
     // Сайт берём по инициатору запроса — так же, как его видят правила DNR.
     const site = siteOf(from);
-    const v = verdict(to, site);
+    const v = verdict(domain, site);
     // Разрешённые заранее домены — обычный трафик, его не показываем.
     if (v.status === 'allowed') return;
-    t.items[to] = { host: to, site, ...v, count: 1, reload: false };
+    t.items[domain] = { host: domain, hosts: [to], site, ...v, count: 1, reload: false };
   }
   pushTab(tabId);
 }
@@ -318,7 +341,7 @@ async function handle(msg, sender) {
       const t = tabs[tabId];
       const fallback = msg.site || (t && t.page ? siteOf(t.page) : null);
       const entries = (msg.hosts || []).map((h) => {
-        const host = String(h).toLowerCase();
+        const host = siteOf(String(h).toLowerCase());
         return { host, site: t?.items[host]?.site || fallback };
       });
       await decide(entries, msg.decision, msg.scope || settings.scope);
